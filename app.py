@@ -9,17 +9,8 @@ from sklearn.metrics import accuracy_score
 
 st.set_page_config(page_title="StockLab", layout="wide")
 
-st.title("StockLab")
-st.subheader("AI-powered investing simulation lab")
-st.caption(
-    "Educational simulation only. Not financial advice. "
-    "Model outputs are uncertain and may be wrong."
-)
-
-mode = st.sidebar.radio(
-    "Choose simulation mode",
-    ["Historical Lab", "AI Scenario Lab"]
-)
+# --- Sidebar (shared inputs) ---
+st.sidebar.header("Simulation Settings")
 
 starting_balance = st.sidebar.number_input(
     "Starting fake balance",
@@ -48,6 +39,10 @@ risk_level = st.sidebar.selectbox(
     "Risk level",
     ["Low", "Medium", "High"]
 )
+
+run_sim = st.sidebar.button("Run StockLab Simulation")
+
+# --- Helper functions (unchanged) ---
 
 @st.cache_data
 def load_prices(tickers, start, end):
@@ -180,7 +175,9 @@ def generate_scenario(prices, days=126, scenario_type="Neutral"):
 
     return simulated_prices.astype(float)
 
-if st.button("Run StockLab Simulation"):
+# --- Run simulation and persist results in session state ---
+
+if run_sim:
     if not tickers:
         st.error("Please enter at least one ticker.")
         st.stop()
@@ -191,26 +188,76 @@ if st.button("Run StockLab Simulation"):
         st.error("No price data found. Try different tickers or dates.")
         st.stop()
 
-    st.write("### Price Data")
-    st.line_chart(prices)
-
     model, confidence_df = train_simple_model(prices)
 
-    st.write("### AI Confidence Signals")
-    if confidence_df is not None and not confidence_df.empty:
-        display_df = confidence_df.copy()
-        display_df["confidence_up_next_30d"] = (
-            display_df["confidence_up_next_30d"] * 100
-        ).round(1).astype(str) + "%"
-        display_df["model_accuracy_test"] = (
-            display_df["model_accuracy_test"] * 100
-        ).round(1).astype(str) + "%"
-        st.dataframe(display_df)
-    else:
-        st.info("Not enough data to train confidence model.")
+    st.session_state["sim_prices"] = prices
+    st.session_state["sim_model"] = model
+    st.session_state["sim_confidence_df"] = confidence_df
+    st.session_state["sim_run"] = True
 
-    if mode == "Historical Lab":
+has_results = st.session_state.get("sim_run", False)
+
+# --- Tabs ---
+
+tab_overview, tab_profile, tab_historical, tab_scenario, tab_signals, tab_disclaimer = st.tabs(
+    ["Overview", "User Profile", "Historical Lab", "AI Scenario Lab", "Model Signals", "Disclaimer"]
+)
+
+# ---- Tab 1: Overview ----
+with tab_overview:
+    st.title("StockLab")
+    st.subheader("AI-powered investing simulation lab")
+    st.caption(
+        "Educational simulation only. Not financial advice. "
+        "Model outputs are uncertain and may be wrong."
+    )
+    st.write(
+        "Welcome to StockLab! This app lets you:"
+    )
+    st.markdown(
+        "- **Explore** historical portfolio simulations\n"
+        "- **Test** different weighting strategies against a benchmark\n"
+        "- **Model** hypothetical market scenarios (bull, bear, high volatility)\n"
+        "- **Estimate** confidence signals using a simple ML model\n"
+        "\n"
+        "Configure your settings in the sidebar, then click "
+        "**Run StockLab Simulation** to see results across the tabs."
+    )
+
+# ---- Tab 2: User Profile ----
+with tab_profile:
+    st.write("## Simulation Profile")
+    st.write("Your current configuration:")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.write(f"**Starting fake balance:** ${starting_balance:,.0f}")
+        st.write(f"**Tickers:** {', '.join(tickers)}")
+        st.write(f"**Strategy:** {strategy}")
+    with col2:
+        st.write(f"**Risk level:** {risk_level}")
+        st.write(f"**Start date:** {start_date}")
+        st.write(f"**End date:** {end_date}")
+
+    if not has_results:
+        st.info("Click **Run StockLab Simulation** in the sidebar to start exploring.")
+    else:
+        st.success("Simulation results are ready! Check the other tabs.")
+
+# ---- Tab 3: Historical Lab ----
+with tab_historical:
+    if not has_results:
+        st.info(
+            "Configure settings in the sidebar and click "
+            "**Run StockLab Simulation** to see historical lab results."
+        )
+    else:
+        prices = st.session_state["sim_prices"]
+        confidence_df = st.session_state["sim_confidence_df"]
+
         st.write("## Historical Lab Results")
+        st.write("### Price Data")
+        st.line_chart(prices)
 
         if strategy == "Equal Weight":
             portfolio = calculate_equal_weight_portfolio(prices, starting_balance)
@@ -250,7 +297,17 @@ if st.button("Run StockLab Simulation"):
         col2.metric("Total return", f"{total_return:.2f}%")
         col3.metric("Max drawdown", f"{dd:.2f}%")
 
+# ---- Tab 4: AI Scenario Lab ----
+with tab_scenario:
+    if not has_results:
+        st.info(
+            "Configure settings in the sidebar and click "
+            "**Run StockLab Simulation** to explore AI scenarios."
+        )
     else:
+        prices = st.session_state["sim_prices"]
+        confidence_df = st.session_state["sim_confidence_df"]
+
         st.write("## AI Scenario Lab Results")
 
         scenario_type = st.selectbox(
@@ -267,15 +324,12 @@ if st.button("Run StockLab Simulation"):
 
         if strategy == "Equal Weight":
             scenario_portfolio = calculate_equal_weight_portfolio(
-                simulated_prices,
-                starting_balance
+                simulated_prices, starting_balance
             )
         elif strategy == "Momentum Weight":
             weights = calculate_momentum_weights(prices)
             scenario_portfolio = calculate_weighted_portfolio(
-                simulated_prices,
-                starting_balance,
-                weights
+                simulated_prices, starting_balance, weights
             )
         else:
             if confidence_df is not None and not confidence_df.empty:
@@ -286,9 +340,7 @@ if st.button("Run StockLab Simulation"):
             else:
                 weights = np.array([1 / len(prices.columns)] * len(prices.columns))
             scenario_portfolio = calculate_weighted_portfolio(
-                simulated_prices,
-                starting_balance,
-                weights
+                simulated_prices, starting_balance, weights
             )
 
         st.write("### Portfolio timelapse result")
@@ -307,3 +359,49 @@ if st.button("Run StockLab Simulation"):
             "This is a model-generated scenario, not a prediction, guarantee, "
             "or recommendation to buy or sell securities."
         )
+
+# ---- Tab 5: Model Signals ----
+with tab_signals:
+    if not has_results:
+        st.info(
+            "Configure settings in the sidebar and click "
+            "**Run StockLab Simulation** to see model signals."
+        )
+    else:
+        confidence_df = st.session_state["sim_confidence_df"]
+
+        st.write("### AI Confidence Signals")
+        if confidence_df is not None and not confidence_df.empty:
+            display_df = confidence_df.copy()
+            display_df["confidence_up_next_30d"] = (
+                display_df["confidence_up_next_30d"] * 100
+            ).round(1).astype(str) + "%"
+            display_df["model_accuracy_test"] = (
+                display_df["model_accuracy_test"] * 100
+            ).round(1).astype(str) + "%"
+            st.dataframe(display_df)
+            st.caption(
+                "These confidence estimates come from a simple Random Forest model "
+                "trained on historical return patterns. They are experimental signals, "
+                "not predictions or recommendations."
+            )
+        else:
+            st.info("Not enough data to train confidence model.")
+
+# ---- Tab 6: Disclaimer ----
+with tab_disclaimer:
+    st.write("## Disclaimer")
+    st.warning(
+        "**StockLab is for educational and simulation purposes only.**\n\n"
+        "- This app uses fake money and simulated scenarios. It does not involve "
+        "real financial transactions.\n"
+        "- Model outputs, confidence estimates, and scenario projections are "
+        "uncertain and may be wrong.\n"
+        "- Nothing in this app constitutes financial advice, a recommendation, "
+        "or a suggestion to buy, sell, or hold any security.\n"
+        "- Past simulated performance does not predict future results.\n"
+        "- Always consult a qualified financial professional before making "
+        "investment decisions.\n\n"
+        "Use this tool to **explore**, **test**, and **learn** — never as the "
+        "basis for real-world financial decisions."
+    )
