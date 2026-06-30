@@ -71,10 +71,23 @@ def calculate_weighted_portfolio(prices, balance, weights):
     portfolio_value = balance * (1 + portfolio_returns).cumprod()
     return portfolio_value
 
+def calculate_low_volatility_weights(prices):
+    vol = prices.pct_change().dropna().std()
+    inv_vol = 1.0 / vol.replace(0, np.nan)
+    inv_vol = inv_vol.fillna(0.0)
+    if inv_vol.sum() == 0:
+        return np.array([1 / len(inv_vol)] * len(inv_vol))
+    return (inv_vol / inv_vol.sum()).values
+
 def max_drawdown(series):
     running_max = series.cummax()
     drawdown = (series - running_max) / running_max
     return drawdown.min()
+
+def portfolio_annualized_volatility(prices, weights):
+    returns = prices.pct_change().dropna()
+    port_returns = returns.dot(weights)
+    return port_returns.std() * np.sqrt(252)
 
 def make_features(prices):
     rows = []
@@ -199,8 +212,8 @@ has_results = st.session_state.get("sim_run", False)
 
 # --- Tabs ---
 
-tab_overview, tab_profile, tab_historical, tab_scenario, tab_signals, tab_disclaimer = st.tabs(
-    ["Overview", "User Profile", "Historical Lab", "AI Scenario Lab", "Model Signals", "Disclaimer"]
+tab_overview, tab_profile, tab_historical, tab_compare, tab_scenario, tab_signals, tab_disclaimer = st.tabs(
+    ["Overview", "User Profile", "Historical Lab", "Strategy Comparison", "AI Scenario Lab", "Model Signals", "Disclaimer"]
 )
 
 # ---- Tab 1: Overview ----
@@ -216,6 +229,7 @@ with tab_overview:
     )
     st.markdown(
         "- **Explore** historical portfolio simulations\n"
+        "- **Compare** multiple weighting strategies side-by-side\n"
         "- **Test** different weighting strategies against a benchmark\n"
         "- **Model** hypothetical market scenarios (bull, bear, high volatility)\n"
         "- **Estimate** confidence signals using a simple ML model\n"
@@ -297,7 +311,99 @@ with tab_historical:
         col2.metric("Total return", f"{total_return:.2f}%")
         col3.metric("Max drawdown", f"{dd:.2f}%")
 
-# ---- Tab 4: AI Scenario Lab ----
+# ---- Tab 4: Strategy Comparison ----
+with tab_compare:
+    if not has_results:
+        st.info(
+            "Configure settings in the sidebar and click "
+            "**Run StockLab Simulation** to compare strategies."
+        )
+    else:
+        prices = st.session_state["sim_prices"]
+        confidence_df = st.session_state["sim_confidence_df"]
+
+        st.write("## Strategy Comparison")
+        st.caption(
+            "All strategies below use the same tickers, dates, and fake starting balance. "
+            "This comparison is an educational simulation — not a recommendation."
+        )
+
+        # --- Compute AI Confidence weights (shared by multiple strategies) ---
+        if confidence_df is not None and not confidence_df.empty:
+            ai_weights_raw = confidence_df.set_index("ticker").reindex(prices.columns)[
+                "confidence_up_next_30d"
+            ].fillna(1 / len(prices.columns)).values
+            ai_weights = ai_weights_raw / ai_weights_raw.sum()
+        else:
+            ai_weights = np.array([1 / len(prices.columns)] * len(prices.columns))
+
+        # --- Build all five strategy portfolios ---
+        equal_portfolio = calculate_equal_weight_portfolio(prices, starting_balance)
+        equal_weights = np.array([1 / len(prices.columns)] * len(prices.columns))
+
+        momentum_weights = calculate_momentum_weights(prices)
+        momentum_portfolio = calculate_weighted_portfolio(prices, starting_balance, momentum_weights)
+
+        lowvol_weights = calculate_low_volatility_weights(prices)
+        lowvol_portfolio = calculate_weighted_portfolio(prices, starting_balance, lowvol_weights)
+
+        ai_portfolio = calculate_weighted_portfolio(prices, starting_balance, ai_weights)
+
+        spy_prices = load_prices(["SPY"], start_date, end_date)
+        spy_portfolio = calculate_equal_weight_portfolio(spy_prices, starting_balance)
+
+        # --- Line chart: all five on the same axis ---
+        chart_df = pd.DataFrame({
+            "Equal Weight": equal_portfolio,
+            "Momentum Weight": momentum_portfolio,
+            "Low Volatility Weight": lowvol_portfolio,
+            "AI Confidence Weight": ai_portfolio,
+            "SPY Benchmark": spy_portfolio.reindex(equal_portfolio.index).ffill()
+        }).dropna()
+
+        st.write("### Portfolio Value Over Time")
+        st.line_chart(chart_df)
+
+        # --- Results table ---
+        st.write("### Results Summary")
+
+        strategy_data = {
+            "Equal Weight": (equal_portfolio, equal_weights),
+            "Momentum Weight": (momentum_portfolio, momentum_weights),
+            "Low Volatility Weight": (lowvol_portfolio, lowvol_weights),
+            "AI Confidence Weight": (ai_portfolio, ai_weights),
+            "SPY Benchmark": (spy_portfolio, np.array([1.0])),
+        }
+
+        rows = []
+        for name, (port, wts) in strategy_data.items():
+            fv = port.iloc[-1]
+            tr = (fv / starting_balance - 1) * 100
+            dd = max_drawdown(port) * 100
+            v = portfolio_annualized_volatility(
+                spy_prices if name == "SPY Benchmark" else prices, wts
+            ) * 100
+            rows.append({
+                "Strategy": name,
+                "Final Fake Balance": f"${fv:,.2f}",
+                "Total Return": f"{tr:+.2f}%",
+                "Max Drawdown": f"{dd:.2f}%",
+                "Annualized Volatility": f"{v:.2f}%",
+            })
+
+        st.dataframe(
+            pd.DataFrame(rows),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.caption(
+            "Annualized volatility is the standard deviation of daily portfolio returns "
+            "annualized (× √252). All values come from simulated historical data — "
+            "they do not predict future outcomes."
+        )
+
+# ---- Tab 5: AI Scenario Lab ----
 with tab_scenario:
     if not has_results:
         st.info(
@@ -360,7 +466,7 @@ with tab_scenario:
             "or recommendation to buy or sell securities."
         )
 
-# ---- Tab 5: Model Signals ----
+# ---- Tab 6: Model Signals ----
 with tab_signals:
     if not has_results:
         st.info(
@@ -388,7 +494,7 @@ with tab_signals:
         else:
             st.info("Not enough data to train confidence model.")
 
-# ---- Tab 6: Disclaimer ----
+# ---- Tab 7: Disclaimer ----
 with tab_disclaimer:
     st.write("## Disclaimer")
     st.warning(
